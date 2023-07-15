@@ -503,3 +503,29 @@ sys_pipe(void)
   }
   return 0;
 }
+
+uint64
+sys_pgaccess(void)
+{
+  // int pgaccess(void *base, int len, void *mask);
+  uint64 p, mask;
+  int len;
+
+  argaddr(0, &p);
+  argint(1, &len);
+  if (len > 32 || len < 1)
+    len = 32;
+  argaddr(2, &mask);
+
+  pagetable_t pagetable = myproc()->pagetable;
+  uint64 m = 0;
+  for (uint64 va = p, cnt = 0; va < p + len * PGSIZE; va += PGSIZE, cnt++) {
+    pte_t *pte = walk(pagetable, va, 0);
+    if ((*pte) & PTE_A) {
+      *pte = (*pte) & (~PTE_A);
+      m |= (1L << cnt);
+    }
+  }
+
+  return copyout(pagetable, mask, (char *) &m, sizeof(uint32));  
+}
