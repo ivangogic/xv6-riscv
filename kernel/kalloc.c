@@ -9,6 +9,10 @@
 #include "riscv.h"
 #include "defs.h"
 
+char ref_cnt[(PHYSTOP - KERNBASE) / PGSIZE];
+struct spinlock ref_cnt_lock;
+char ind = 1; // kinit() freerange
+
 void freerange(void *pa_start, void *pa_end);
 
 extern char end[]; // first address after kernel.
@@ -26,8 +30,12 @@ struct {
 void
 kinit()
 {
+  for (uint64 i = 0; i < sizeof(ref_cnt); i++)
+    ref_cnt[i] = 0;
+
   initlock(&kmem.lock, "kmem");
   freerange(end, (void*)PHYSTOP);
+  ind = 0;
 }
 
 void
@@ -50,6 +58,9 @@ kfree(void *pa)
 
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
+
+  if (ind == 0 && ref_cnt_decrease_and_check((uint64) pa) == 1)
+    return;
 
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
@@ -76,7 +87,45 @@ kalloc(void)
     kmem.freelist = r->next;
   release(&kmem.lock);
 
-  if(r)
+  if(r) {
     memset((char*)r, 5, PGSIZE); // fill with junk
+    ref_cnt_increase((uint64) r);
+  }
   return (void*)r;
+}
+
+char
+ref_cnt_decrease_and_check(uint64 pa)
+{
+  char cnt;
+
+  cnt = ref_cnt_decrease(pa);
+  
+  return (cnt > 0) ? 1 : 0;
+}
+
+char
+ref_cnt_increase(uint64 pa)
+{
+  char res;
+
+  acquire(&ref_cnt_lock);
+  res = ++ref_cnt[PA2REF(pa)];
+  release(&ref_cnt_lock);
+
+  return res;
+}
+
+char
+ref_cnt_decrease(uint64 pa)
+{
+  char res;
+
+  acquire(&ref_cnt_lock);
+  if (ref_cnt[PA2REF(pa)] == 0)
+    panic("ref_cnt_decrease");
+  res = --ref_cnt[PA2REF(pa)];
+  release(&ref_cnt_lock);
+
+  return res;
 }

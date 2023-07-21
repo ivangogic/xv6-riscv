@@ -5,6 +5,11 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
+
+extern char ref_cnt[];
+extern struct spinlock ref_cnt_lock;
 
 /*
  * the kernel's page table.
@@ -308,7 +313,6 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -317,14 +321,17 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
-      goto err;
+    if ((flags & PTE_W) || (flags & PTE_C)) {
+      flags = (flags & (~PTE_W)) | PTE_C;
+      *pte = PA2PTE(pa) | flags; 
     }
+
+    if (mappages(new, i, PGSIZE, (uint64) pa, flags) != 0)
+      goto err;
+
+    ref_cnt_increase(pa);
   }
+
   return 0;
 
  err:
@@ -352,9 +359,14 @@ int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
+  pte_t *pte;
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
+    if ((pte = cow_check(pagetable, va0)) != 0) {
+      if (cow(pte) == 0)
+        return -1;
+    }
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0)
       return -1;
@@ -436,4 +448,40 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+pte_t *
+cow_check(pagetable_t pagetable, uint64 va)
+{
+  struct proc *p = myproc();
+  pte_t *pte;
+
+  if (va >= p->sz || va >= MAXVA || va < PGSIZE)
+    return 0;
+  if ((pte = walk(pagetable, va, 0)) == 0)
+    return 0;
+  if (*pte & (PTE_V | PTE_U | PTE_C))
+    return pte;
+
+  return 0;
+}
+
+uint64
+cow(pte_t *pte)
+{
+  uint64 pa, flags;
+  char *mem;
+
+  pa = PTE2PA(*pte);
+  flags = PTE_FLAGS(*pte);
+  if ((mem = kalloc()) == 0)
+    return 0;
+  memmove(mem, (void *) pa, PGSIZE);
+
+  kfree((void *) pa);
+
+  flags = (flags & (~PTE_C)) | PTE_W;
+
+  *pte = PA2PTE(mem) | flags;
+  return 1;
 }

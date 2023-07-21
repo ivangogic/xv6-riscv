@@ -173,6 +173,11 @@ uint64          walkaddr(pagetable_t, uint64);
 int             copyout(pagetable_t, uint64, char *, uint64);
 int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
+pte_t *         cow_check(pagetable_t, uint64);
+uint64          cow(pte_t *);
+char            ref_cnt_increase(uint64);
+char            ref_cnt_decrease(uint64);
+char            ref_cnt_decrease_and_check(uint64);
 
 // plic.c
 void            plicinit(void);

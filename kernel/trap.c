@@ -65,6 +65,21 @@ usertrap(void)
     intr_on();
 
     syscall();
+  } else if (r_scause() == 15) {
+    if (killed(p))
+      exit(-1);
+
+    // we need to check if it's cow store page fault
+    pte_t *pte;
+    if ((pte = cow_check(p->pagetable, r_stval())) != 0) {
+      if (cow(pte) == 0) {
+        printf("usertrap(): scause %p pid=%d\n", r_scause(), p->pid);
+        printf("\tcow failed\n");
+        setkilled(p);
+      }
+    }
+    else
+      setkilled(p);
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
