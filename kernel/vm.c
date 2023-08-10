@@ -5,6 +5,11 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "fcntl.h"
+#include "spinlock.h"
+#include "sleeplock.h"
+#include "file.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -435,5 +440,90 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return 0;
   } else {
     return -1;
+  }
+}
+
+struct vma* find_vma(uint64 addr, struct proc *p) {
+  struct vma *v = 0;
+
+  for (int i = 0; i < NVMA; i++)
+    if (p->vmas[i].used == 1 && p->vmas[i].vastart <= addr && addr < p->vmas[i].vastart + p->vmas[i].sz) {
+      v = &p->vmas[i];
+      break;
+    }
+
+  return v;
+}
+
+int
+check_mmap_pgfault(uint64 stval, struct proc *p)
+{
+  struct vma *v = find_vma(stval, p);
+  void *pa;
+  int perm, offset;
+
+  if (v == 0)
+    return -1;
+
+  pa = kalloc();
+  if (pa == 0)
+    panic("check_mmap_pgfault: kalloc");
+  memset(pa, 0, PGSIZE);
+
+  perm = PTE_U;
+  if (v->perm & PROT_READ)
+    perm |= PTE_R;
+  if (v->perm & PROT_WRITE)
+    perm |= PTE_W;
+
+  stval = PGROUNDDOWN(stval);
+  if (mappages(p->pagetable, stval, PGSIZE, (uint64) pa, perm) < 0) {
+    kfree(pa);
+    panic("check_mmap_pgfault: mappages");
+  }
+
+  offset = stval - v->vastart + v->off;
+
+  begin_op();
+  ilock(v->f->ip);
+  if (readi(v->f->ip, 0, (uint64) pa, offset, PGSIZE) == 0) {
+    iunlock(v->f->ip);
+    end_op();
+    kfree(pa);
+    panic("check_mmap_pgfault: readi");
+  }
+
+  iunlock(v->f->ip);
+  end_op();
+  return 0;
+}
+
+void
+unmap_vma(pagetable_t pagetable, uint64 va, uint64 nbytes, struct vma *v)
+{
+  uint64 a, pa, aoff;
+  pte_t *pte;
+
+  if((va % PGSIZE) != 0)
+    panic("vmaunmap: not aligned");
+
+  for(a = va; a < va + nbytes; a += PGSIZE){
+    if ((pte = walk(pagetable, a, 0)) == 0)
+      panic("vmaunmap: walk");
+    if (PTE_FLAGS(*pte) == PTE_V)
+      panic("vmaunmap: not a leaf");
+    if (*pte & PTE_V) {
+      pa = PTE2PA(*pte);
+      if ((*pte & PTE_D) && (v->flags & MAP_SHARED)) {
+        begin_op();
+        ilock(v->f->ip);
+        aoff = a - v->vastart;
+        writei(v->f->ip, 0, pa, v->off + aoff, PGSIZE);
+        iunlock(v->f->ip);
+        end_op();
+      }
+      kfree((void *) pa);
+      *pte = 0;
+    }
   }
 }

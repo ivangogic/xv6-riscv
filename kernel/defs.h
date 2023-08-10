@@ -173,6 +173,9 @@ uint64          walkaddr(pagetable_t, uint64);
 int             copyout(pagetable_t, uint64, char *, uint64);
 int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
+struct vma *    find_vma(uint64, struct proc *);
+int             check_mmap_pgfault(uint64, struct proc *);
+void            unmap_vma(pagetable_t, uint64, uint64, struct vma *);
 
 // plic.c
 void            plicinit(void);

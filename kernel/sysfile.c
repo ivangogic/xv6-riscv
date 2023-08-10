@@ -15,6 +15,7 @@
 #include "sleeplock.h"
 #include "file.h"
 #include "fcntl.h"
+#include "memlayout.h"
 
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
@@ -501,5 +502,103 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+uint64
+sys_mmap(void)
+{
+  uint64 addr;
+  uint64 length;
+  int prot;
+  int flags;
+  struct file *f;
+  uint64 offset;
+  struct proc *p;
+  struct vma *v = 0;
+  uint64 vaend = VMASTOP;
+
+  argaddr(0, &addr);
+  argaddr(1, &length);
+  argint(2, &prot);
+  argint(3, &flags);
+  if (argfd(4, 0, &f) < 0)
+    return -1;
+  argaddr(5, &offset);
+
+  if (length == 0)
+    return -1;
+
+  if (!f->readable && (prot & PROT_READ))
+    return -1;
+  if (!f->writable && (prot & PROT_WRITE) && !(flags & MAP_PRIVATE))
+    return -1;
+
+  length = PGROUNDUP(length);
+  p = myproc();
+
+  for (int i = 0; i < NVMA; i++)
+    if (!p->vmas[i].used) {
+      if (v == 0) {
+        v = &p->vmas[i];
+        p->vmas[i].used = 1;
+      }
+    }
+    else if (p->vmas[i].vastart < vaend)
+      vaend = PGROUNDDOWN(p->vmas[i].vastart);
+
+  if (v == 0)
+    return -1;
+
+  v->vastart = vaend - length;
+  v->sz = length;
+  v->perm = prot;
+  v->flags = flags;
+  v->f = f;
+  v->off = offset;
+
+  filedup(f);
+
+  return v->vastart;
+}
+
+uint64
+sys_munmap(void)
+{
+  uint64 addr, addr_aligned;
+  uint64 length;
+  struct proc  *p;
+  struct vma *v = 0;
+
+  argaddr(0, &addr);
+  argaddr(1, &length);
+
+  if (length == 0)
+    return -1;
+
+  p = myproc();
+  v = find_vma(addr, p);
+  if (v == 0)
+    return -1;
+  
+  if (addr > v->vastart && addr + length < v->vastart + v->sz)
+    return -1;
+
+  addr_aligned = PGROUNDDOWN(addr);
+  length = PGROUNDUP(addr + length) - addr_aligned;
+
+  unmap_vma(p->pagetable, addr_aligned, length, v);
+
+  if (addr_aligned == v->vastart) {
+    v->off += addr_aligned + length - v->vastart;
+    v->vastart = addr_aligned + length;
+  }
+  v->sz -= length;
+
+  if (v->sz <= 0) {
+    fileclose(v->f);
+    v->used = 0;
+  }
+
   return 0;
 }
